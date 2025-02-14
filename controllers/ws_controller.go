@@ -114,7 +114,7 @@ func receiveMessages(conn *websocket.Conn, userID string, wsConnectionID string)
 		switch msgData.Type {
 		case "private":
 			// 发送私聊消息
-			if err := GetWSManager().SendMessage(msgData.ReceiverID, []byte(msgData.Content)); err != nil {
+			if err := GetWSManager().SendMessage(msgData.ReceiverID, msgData); err != nil {
 				log.Println("Failed to send private message:", err)
 			}
 		case "group":

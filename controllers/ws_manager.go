@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"log"
 	"sync"
 
@@ -64,6 +65,21 @@ func (m *WSManager) GetUserID(wsConnectionID string) string {
 	return m.connectionIDMap[wsConnectionID]
 }
 
+// 根据用户ID获取连接
+func (m *WSManager) GetConnectionByUserID(userID string) *websocket.Conn {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// 查找所有连接的用户ID，匹配传入的userID
+	for wsConnectionID, id := range m.connectionIDMap {
+		if id == userID {
+			return m.connections[wsConnectionID]
+		}
+	}
+
+	return nil
+}
+
 // 添加群组成员
 func (m *WSManager) AddGroupMember(groupID, wsConnectionID string) {
 	m.mu.Lock()
@@ -73,21 +89,30 @@ func (m *WSManager) AddGroupMember(groupID, wsConnectionID string) {
 }
 
 // 发送私聊消息给指定用户
-func (m *WSManager) SendMessage(receiverID string, message []byte) error {
+func (m *WSManager) SendMessage(receiverID string, msgData interface{}) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// 获取接收者的 WebSocket 连接
-	conn := m.GetConnection(receiverID)
+	// 获取接收者的 WebSocket 连接，使用用户ID查找连接
+	conn := m.GetConnectionByUserID(receiverID)
 	if conn == nil {
 		log.Printf("No active connection found for user %s", receiverID)
 		return nil
 	}
-
+	message, err := json.Marshal(msgData)
+	if err != nil {
+		log.Printf("Failed to marshal message: %v", err)
+		return err
+	}
 	// 检查连接是否有效
 	if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
 		log.Printf("Failed to send message to user %s: %v", receiverID, err)
-		m.RemoveConnection(receiverID) // 移除无效连接
+		// 移除无效连接
+		for wsConnectionID, id := range m.connectionIDMap {
+			if id == receiverID {
+				m.RemoveConnection(wsConnectionID)
+			}
+		}
 		return err
 	}
 
