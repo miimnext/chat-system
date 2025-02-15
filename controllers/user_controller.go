@@ -160,7 +160,11 @@ func CreateConversationHandler(c *gin.Context) {
 	err = config.DB.Where("(participant_a = ? AND participant_b = ?) OR (participant_a = ? AND participant_b = ?)", userID, receiverID, receiverID, userID).First(&existingConversation).Error
 	if err == nil {
 		// 如果找到了已有的会话，返回已存在的会话 ID
-		c.JSON(http.StatusOK, gin.H{"conversation_id": existingConversation.ConversationID})
+		data := map[string]interface{}{
+			"conversation_id": existingConversation.ConversationID,
+		}
+		// 返回新创建的会话 ID
+		utils.RespondSuccess(c, data, nil)
 		return
 	}
 
@@ -181,9 +185,8 @@ func CreateConversationHandler(c *gin.Context) {
 	}
 	data := map[string]interface{}{
 		"conversation_id": conversationID,
-		"code":            200,
+		"code":            "200",
 	}
-	log.Println(data, 123123)
 	// 返回新创建的会话 ID
 	utils.RespondSuccess(c, data, nil)
 
