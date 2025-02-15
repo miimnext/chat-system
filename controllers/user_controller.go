@@ -5,10 +5,12 @@ import (
 	"chat-system/models"
 	"chat-system/services"
 	"chat-system/utils"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -121,4 +123,68 @@ func GetUserInfo(c *gin.Context) {
 		Username: userInfo.Username,
 	}
 	utils.RespondSuccess(c, data, nil)
+}
+
+// CreateConversationHandler 创建会话（使用POST请求）
+func CreateConversationHandler(c *gin.Context) {
+	// 获取请求的 JSON 数据
+	var requestData struct {
+		UserID     string `json:"user_id"`     // 当前用户ID
+		ReceiverID string `json:"receiver_id"` // 目标用户ID
+	}
+
+	if err := c.ShouldBindJSON(&requestData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+
+	userID := requestData.UserID
+	receiverID := requestData.ReceiverID
+
+	// 校验 receiverID 是否存在
+	var receiverUser models.User
+	err := config.DB.Where("id = ?", receiverID).First(&receiverUser).Error
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"message": "Receiver does not exist", "code": "404"})
+		return
+	}
+
+	// 校验 receiverID 是否与当前用户的 ID 匹配
+	if userID == receiverID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot create a conversation with yourself"})
+		return
+	}
+
+	// 查找是否已有私聊会话
+	var existingConversation models.Conversation
+	err = config.DB.Where("(participant_a = ? AND participant_b = ?) OR (participant_a = ? AND participant_b = ?)", userID, receiverID, receiverID, userID).First(&existingConversation).Error
+	if err == nil {
+		// 如果找到了已有的会话，返回已存在的会话 ID
+		c.JSON(http.StatusOK, gin.H{"conversation_id": existingConversation.ConversationID})
+		return
+	}
+
+	// 如果没有找到已有会话，创建一个新的会话
+	conversationID := uuid.New().String()
+	newConversation := models.Conversation{
+		ConversationID: conversationID,
+		Type:           "private",
+		ParticipantA:   userID,
+		ParticipantB:   receiverID,
+	}
+
+	// 保存新会话到数据库
+	if err := config.DB.Create(&newConversation).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create conversation"})
+		log.Println("Error creating conversation:", err)
+		return
+	}
+	data := map[string]interface{}{
+		"conversation_id": conversationID,
+		"code":            200,
+	}
+	log.Println(data, 123123)
+	// 返回新创建的会话 ID
+	utils.RespondSuccess(c, data, nil)
+
 }

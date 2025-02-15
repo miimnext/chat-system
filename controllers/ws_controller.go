@@ -24,7 +24,6 @@ var upgrader = websocket.Upgrader{
 
 // WebSocket 连接处理
 // WebSocket 连接处理
-// WebSocket 连接处理
 func Connect(c *gin.Context) {
 	// 升级 HTTP 请求为 WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
@@ -51,13 +50,60 @@ func Connect(c *gin.Context) {
 	// 启动心跳 Goroutine
 	go sendHeartbeat(conn)
 
+	// 获取会话列表并发送给客户端
+	go sendConversations(conn, userIDStr)
+
 	// 监听并处理消息
 	receiveMessages(conn, userIDStr, wsConnectionID)
 }
 
+// 获取并发送会话列表
+func sendConversations(conn *websocket.Conn, userID string) {
+	// 查询用户的会话列表（包括私聊和群聊），并预加载参与者信息
+	var conversations []models.Conversation
+	err := config.DB.
+		Preload("ParticipantAUser").
+		Preload("ParticipantBUser").
+		Where("participant_a = ? OR participant_b = ? OR group_id IS NOT NULL", userID, userID).
+		Find(&conversations).
+		Error
+	if err != nil {
+		log.Println("Error fetching conversations:", err)
+		return
+	}
+
+	// 格式化会话列表并发送
+	conversationsData := make([]map[string]interface{}, len(conversations))
+	for i, conv := range conversations {
+		conversationsData[i] = map[string]interface{}{
+			"conversation_id": conv.ConversationID,
+			"type":            conv.Type,
+			"participant_a":   conv.ParticipantAUser.Username, // 使用预加载的参与者A信息
+			"participant_b":   conv.ParticipantBUser.Username, // 使用预加载的参与者B信息
+			"group_id":        conv.GroupID,
+		}
+	}
+
+	// 发送会话列表到客户端
+	responseMessage := map[string]interface{}{
+		"Type":          "conversations",
+		"Conversations": conversationsData,
+	}
+
+	responseBytes, err := json.Marshal(responseMessage)
+	if err != nil {
+		log.Println("Failed to marshal conversations response:", err)
+		return
+	}
+
+	if err := conn.WriteMessage(websocket.TextMessage, responseBytes); err != nil {
+		log.Println("Failed to send conversations:", err)
+	}
+}
+
 // 发送心跳消息
 func sendHeartbeat(conn *websocket.Conn) {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(30 * time.Second) // 每30秒发送一次心跳
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -74,7 +120,11 @@ func receiveMessages(conn *websocket.Conn, userID string, wsConnectionID string)
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
-			log.Println("Error while reading message:", err)
+			if websocket.IsUnexpectedCloseError(err) {
+				log.Println("Unexpected WebSocket close:", err)
+			} else {
+				log.Println("Error while reading message:", err)
+			}
 			break
 		}
 
@@ -110,7 +160,7 @@ func receiveMessages(conn *websocket.Conn, userID string, wsConnectionID string)
 			}
 		}
 
-		// 判断消息类型
+		// 判断消息类型并发送消息
 		switch msgData.Type {
 		case "private":
 			// 发送私聊消息
@@ -125,11 +175,14 @@ func receiveMessages(conn *websocket.Conn, userID string, wsConnectionID string)
 		default:
 			log.Println("Message is neither private nor group message:", msgData.Type)
 		}
+
 		// 保存消息到数据库
 		if err := config.DB.Create(&msgData).Error; err != nil {
 			log.Println("Failed to save message:", err)
 			continue
 		}
+
+		// 发送确认消息
 		sendConfirmation(conn, msgData.MessageID, wsConnectionID)
 	}
 }

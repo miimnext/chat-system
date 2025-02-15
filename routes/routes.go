@@ -31,6 +31,7 @@ func RegisterRoutes() *gin.Engine {
 	{
 		protected.Use(middlewares.TokenAuthMiddleware())
 		protected.GET("/userinfo", controllers.GetUserInfo)
+		protected.POST("/createConversation", controllers.CreateConversationHandler)
 	}
 
 	return r
