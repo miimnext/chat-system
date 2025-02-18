@@ -2,7 +2,6 @@ package main
 
 import (
 	"chat-system/config"
-	"chat-system/controllers"
 	"chat-system/models" // 导入 controllers 包
 	"chat-system/routes"
 	"log"
@@ -13,7 +12,7 @@ func main() {
 	config.InitDB()
 	// 自动迁移
 	models.Migrate()
-	go controllers.GetWSManager().Start()
+
 	// 注册路由
 	r := routes.RegisterRoutes()
 

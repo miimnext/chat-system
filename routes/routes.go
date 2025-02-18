@@ -10,6 +10,7 @@ import (
 
 // RegisterRoutes 注册所有路由
 func RegisterRoutes() *gin.Engine {
+
 	r := gin.Default()
 	// 配置跨域中间件
 	corsConfig := cors.Config{
@@ -21,7 +22,7 @@ func RegisterRoutes() *gin.Engine {
 
 	// 使用 CORS 中间件
 	r.Use(cors.New(corsConfig))
-	r.GET("/ws", controllers.Connect)
+	r.GET("/ws", controllers.HandleWebSocket)
 	protected := r.Group("/api")
 
 	// 注册路由
@@ -31,7 +32,9 @@ func RegisterRoutes() *gin.Engine {
 	{
 		protected.Use(middlewares.TokenAuthMiddleware())
 		protected.GET("/userinfo", controllers.GetUserInfo)
+		protected.GET("/conversation", controllers.GetConversation)
 		protected.POST("/createConversation", controllers.CreateConversationHandler)
+		protected.GET("/conversation/:conversation_id", controllers.GetMessagesByConversationID)
 	}
 
 	return r

@@ -2,182 +2,164 @@ package controllers
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// WebSocket 管理器
-type WSManager struct {
-	connections     map[string]*websocket.Conn // 存储连接的映射
-	connectionIDMap map[string]string          // 存储wsConnectionID与userID的映射
-	groupMembers    map[string][]string        // 存储GroupID与成员wsConnectionID的映射
-	mu              sync.RWMutex               // 读写锁，确保并发安全
+// Client 代表一个 WebSocket 客户端
+type Client struct {
+	Conn         *websocket.Conn // WebSocket 连接
+	Send         chan []byte     // 用于发送消息的通道
+	LastActive   time.Time       // 上次活动时间
+	UserID       string          // 用户 ID
+	ConnectionID string          // 连接 ID
 }
 
-// 创建一个新的 WebSocket 管理器
-func NewWSManager() *WSManager {
-	return &WSManager{
-		connections:     make(map[string]*websocket.Conn),
-		connectionIDMap: make(map[string]string),   // 初始化映射
-		groupMembers:    make(map[string][]string), // 初始化群组成员映射
+// WebSocket 连接管理器
+type WebSocketManager struct {
+	Connections  map[string]*Client // 存储连接及客户端映射
+	Broadcast    chan []byte        // 广播消息通道
+	Register     chan *Client       // 注册新连接
+	Unregister   chan *Client       // 注销连接
+	PingInterval time.Duration      // 心跳检测间隔
+	PongTimeout  time.Duration      // Pong 超时
+	Mutex        sync.RWMutex       // 读写锁
+}
+
+// 创建 WebSocket 管理器
+func NewWebSocketManager() *WebSocketManager {
+	return &WebSocketManager{
+		Connections: make(map[string]*Client),
+		Broadcast:   make(chan []byte),
+		Register:    make(chan *Client),
+		Unregister:  make(chan *Client),
 	}
 }
 
-// 启动 WebSocket 管理器
-func (m *WSManager) Start() {
-	log.Println("WebSocket Manager started")
-}
+// 运行 WebSocket 管理器（管理连接的注册/注销）
+func (manager *WebSocketManager) Start() {
+	for {
+		select {
+		case client := <-manager.Register:
+			manager.Mutex.Lock()
+			manager.Connections[client.UserID] = client
+			manager.Mutex.Unlock()
+			log.Printf("🔵 New client connected: %s", client.UserID)
 
-// 添加连接，关联用户ID和wsConnectionID
-func (m *WSManager) AddConnection(wsConnectionID, userID string, conn *websocket.Conn) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.connections[wsConnectionID] = conn
-	m.connectionIDMap[wsConnectionID] = userID
-	log.Printf("User %s connected with connection ID %s", userID, wsConnectionID)
-}
+		case client := <-manager.Unregister:
+			manager.Mutex.Lock()
+			if _, ok := manager.Connections[client.UserID]; ok {
+				delete(manager.Connections, client.UserID)
+				close(client.Send)
+				log.Printf("🔴 Client disconnected: %s", client.UserID)
+			}
+			manager.Mutex.Unlock()
 
-// 移除连接
-func (m *WSManager) RemoveConnection(wsConnectionID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if conn, ok := m.connections[wsConnectionID]; ok {
-		conn.Close() // 关闭连接
-		delete(m.connections, wsConnectionID)
-		delete(m.connectionIDMap, wsConnectionID) // 移除wsConnectionID的映射
-		log.Printf("Connection ID %s disconnected", wsConnectionID)
-	}
-}
-
-// 获取连接
-func (m *WSManager) GetConnection(wsConnectionID string) *websocket.Conn {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.connections[wsConnectionID]
-}
-
-// 获取用户ID通过 wsConnectionID
-func (m *WSManager) GetUserID(wsConnectionID string) string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.connectionIDMap[wsConnectionID]
-}
-
-// 根据用户ID获取连接
-func (m *WSManager) GetConnectionByUserID(userID string) *websocket.Conn {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// 查找所有连接的用户ID，匹配传入的userID
-	for wsConnectionID, id := range m.connectionIDMap {
-		if id == userID {
-			return m.connections[wsConnectionID]
+		case message := <-manager.Broadcast:
+			manager.Mutex.Lock()
+			for _, client := range manager.Connections {
+				select {
+				case client.Send <- message:
+				default:
+					close(client.Send)
+					delete(manager.Connections, client.UserID)
+					log.Printf("⚠️ Failed to send message to client: %s", client.UserID)
+				}
+			}
+			manager.Mutex.Unlock()
 		}
 	}
-
-	return nil
-}
-
-// 添加群组成员
-func (m *WSManager) AddGroupMember(groupID, wsConnectionID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.groupMembers[groupID] = append(m.groupMembers[groupID], wsConnectionID)
-	log.Printf("Connection ID %s added to group %s", wsConnectionID, groupID)
 }
 
 // 发送私聊消息给指定用户
-func (m *WSManager) SendMessage(receiverID string, msgData interface{}) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (manager *WebSocketManager) SendMessage(receiverID string, msgData interface{}) error {
+	manager.Mutex.RLock()
+	defer manager.Mutex.RUnlock()
 
-	// 获取接收者的 WebSocket 连接，使用用户ID查找连接
-	conn := m.GetConnectionByUserID(receiverID)
-	if conn == nil {
-		log.Printf("No active connection found for user %s", receiverID)
-		return nil
+	client, exists := manager.Connections[receiverID]
+	if !exists {
+		log.Printf("⚠️ No active connection found for user %s", receiverID)
+		return fmt.Errorf("client not found")
 	}
+
 	message, err := json.Marshal(msgData)
 	if err != nil {
-		log.Printf("Failed to marshal message: %v", err)
-		return err
-	}
-	// 检查连接是否有效
-	if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-		log.Printf("Failed to send message to user %s: %v", receiverID, err)
-		// 移除无效连接
-		for wsConnectionID, id := range m.connectionIDMap {
-			if id == receiverID {
-				m.RemoveConnection(wsConnectionID)
-			}
-		}
+		log.Printf("⚠️ Failed to marshal message: %v", err)
 		return err
 	}
 
-	log.Printf("Private message sent to user %s: %s", receiverID, string(message))
-	return nil
-}
-
-// 广播消息给指定群组
-func (m *WSManager) BroadcastGroupMessage(groupID string, message []byte) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// 获取群组中的所有成员
-	groupConnections, exists := m.groupMembers[groupID]
-	if !exists {
-		log.Printf("Group %s not found", groupID)
-		return nil
-	}
-
-	// 向所有成员发送消息
-	for _, wsConnectionID := range groupConnections {
-		conn := m.GetConnection(wsConnectionID)
-		if conn == nil {
-			log.Printf("No active connection found for connection ID %s", wsConnectionID)
-			continue
-		}
-
-		// 检查连接是否有效
-		if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			log.Printf("Failed to send message to connection ID %s: %v", wsConnectionID, err)
-			m.RemoveConnection(wsConnectionID) // 移除无效连接
-			continue
-		}
-
-		log.Printf("Message sent to group %s, connection ID %s", groupID, wsConnectionID)
-	}
-
-	return nil
-}
-
-// 广播消息给所有连接
-func (m *WSManager) Broadcast(message []byte) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	for wsConnectionID, conn := range m.connections {
-		if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			log.Printf("Failed to send broadcast message to connection ID %s: %v", wsConnectionID, err)
-			m.RemoveConnection(wsConnectionID) // 移除无效连接
+	// 异步发送消息
+	go func() {
+		if err := client.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
+			log.Printf("⚠️ Failed to send message to user %s: %v", receiverID, err)
+			manager.RemoveConnection(receiverID) // Remove invalid connection
 		} else {
-			log.Printf("Broadcast message sent to connection ID %s: %s", wsConnectionID, string(message))
+			log.Printf("📩 Private message sent to user %s: %s", receiverID, string(message))
+		}
+	}()
+
+	return nil
+}
+
+// 移除连接
+func (manager *WebSocketManager) RemoveConnection(userID string) {
+	manager.Mutex.Lock()
+	defer manager.Mutex.Unlock()
+
+	if client, exists := manager.Connections[userID]; exists {
+		client.Conn.Close()
+		delete(manager.Connections, userID)
+		log.Printf("🔴 Connection removed for user: %s", userID)
+	}
+}
+
+// 添加连接，关联用户ID和连接ID
+func (manager *WebSocketManager) AddConnection(userID, connectionID string, conn *websocket.Conn) {
+	manager.Mutex.Lock()
+	defer manager.Mutex.Unlock()
+
+	// 添加连接到管理器
+	client := &Client{
+		Conn:         conn,
+		Send:         make(chan []byte),
+		LastActive:   time.Now(),
+		UserID:       userID,
+		ConnectionID: connectionID,
+	}
+	manager.Connections[userID] = client
+	log.Printf("🟢 User %s connected with connection ID %s", userID, connectionID)
+
+	// 开始处理发送通道
+	go manager.handleMessages(client)
+}
+
+// 处理消息发送
+func (manager *WebSocketManager) handleMessages(client *Client) {
+	for msg := range client.Send {
+		err := client.Conn.WriteMessage(websocket.TextMessage, msg)
+		if err != nil {
+			log.Printf("⚠️ Error sending message to %s: %v", client.UserID, err)
+			manager.RemoveConnection(client.UserID)
+			break
 		}
 	}
 }
 
 // 全局 WebSocket 管理器实例
 var (
-	wsManager *WSManager
+	wsManager *WebSocketManager
 	once      sync.Once
 )
 
 // 获取 WebSocket 管理器实例
-func GetWSManager() *WSManager {
+func GetWSManager(pingInterval, pongTimeout time.Duration) *WebSocketManager {
 	once.Do(func() {
-		wsManager = NewWSManager()
+		wsManager = NewWebSocketManager()
+		go wsManager.Start()
 	})
 	return wsManager
 }

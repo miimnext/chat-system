@@ -2,6 +2,7 @@ package middlewares
 
 import (
 	"chat-system/services"
+	"chat-system/utils"
 	"net/http"
 	"strings"
 
@@ -30,7 +31,7 @@ func TokenAuthMiddleware() gin.HandlerFunc {
 		// 验证 Token 并获取用户信息
 		user, err := services.GetCurrentUser(tokenString)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"message": "Invalid or expired token"})
+			utils.RespondSuccess(c, gin.H{"message": "Invalid or expired token", "code": "401"}, nil)
 			c.Abort()
 			return
 		}
