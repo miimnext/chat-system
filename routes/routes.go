@@ -22,7 +22,7 @@ func RegisterRoutes() *gin.Engine {
 
 	// 使用 CORS 中间件
 	r.Use(cors.New(corsConfig))
-	r.GET("/ws", controllers.HandleWebSocket)
+	r.GET("/ws", controllers.WSController)
 	protected := r.Group("/api")
 
 	// 注册路由
