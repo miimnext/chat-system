@@ -31,7 +31,7 @@ func TokenAuthMiddleware() gin.HandlerFunc {
 		// 验证 Token 并获取用户信息
 		user, err := services.GetCurrentUser(tokenString)
 		if err != nil {
-			utils.RespondSuccess(c, gin.H{"message": "Invalid or expired token", "code": "401"}, nil)
+			utils.RespondSuccess(c, gin.H{"message": "Invalid or expired token", "code": 401}, nil)
 			c.Abort()
 			return
 		}

@@ -1,6 +1,9 @@
 package services
 
 import (
+	"chat-system/config"
+	"chat-system/models"
+	"log"
 	"net/http"
 	"time"
 
@@ -30,4 +33,20 @@ func HandleWebSocket(ctx *gin.Context) {
 
 	go client.ReadMessages()
 	go client.WriteMessages()
+}
+
+func getReceiverID(SenderID, ConversationID string) string {
+	var conversation models.Conversation
+	err := config.DB.Where("conversation_id = ?", ConversationID).First(&conversation).Error
+	if err != nil {
+		log.Println("Conversation not found:", err)
+
+	}
+	ReceiverID := ""
+	if conversation.ParticipantA == SenderID {
+		ReceiverID = conversation.ParticipantB
+	} else {
+		ReceiverID = conversation.ParticipantA
+	}
+	return ReceiverID
 }
