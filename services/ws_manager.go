@@ -5,6 +5,7 @@ import (
 	"chat-system/models"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -45,6 +46,7 @@ type Message struct {
 	To             string `json:"to,omitempty"`
 	Content        string `json:"content"`
 	ConversationID string `json:"conversation_id"`
+	ReadId         uint   `json:"readId"`
 }
 
 func (m *WSManager) Run() {
@@ -127,6 +129,17 @@ func (c *Client) ReadMessages() {
 			continue
 		}
 
+		if data.Type == "updateRead" {
+			// 假设收到的消息中包含一个 MaxID 字段
+			maxID := data.ReadId // 最大 ID，表示更新所有 ID 小于等于该值的消息
+			err := updateMessagesAsReadByID(data.ConversationID, maxID)
+			if err != nil {
+				fmt.Println("Failed to update messages as read:", err)
+			} else {
+				fmt.Println("Successfully updated messages as read for conversation:", data.ConversationID)
+			}
+			return
+		}
 		if data.Type == "private" {
 			ReceiverID := getReceiverID(c.ID, data.ConversationID)
 			message := models.Message{
@@ -137,15 +150,23 @@ func (c *Client) ReadMessages() {
 				MessageType:    data.Type,
 				Status:         "sent",
 			}
+			// 更新会话列表排序
+			if err := config.DB.Model(&models.Conversation{}).
+				Where("conversation_id = ?", data.ConversationID).
+				Update("last_message_at", time.Now()).Error; err != nil {
+				log.Println("Failed to update last_message_at:", err)
+			}
+			// 存储消息
+			if err := config.DB.Create(&message).Error; err != nil {
+				fmt.Println("Failed to send message")
+				return
+			}
+			// ws推送消息
 			err := Manager.SendMessage(data.ConversationID, ReceiverID, message)
 			if err != nil {
 				fmt.Println("Failed to send private message:", err)
 			}
 
-			if err := config.DB.Create(&message).Error; err != nil {
-				fmt.Println("Failed to send message")
-				return
-			}
 		} else {
 			Manager.broadcast <- msg
 		}
@@ -225,9 +246,6 @@ func (c *Client) StartHeartbeat() {
 			return
 		}
 
-		// 打印日志，每次发送心跳
-		fmt.Printf("Sent ping to client %s at %v\n", c.ID, time.Now())
-
 		// 检测最近的 Pong 是否超时
 		if time.Since(c.LastPing) > pongTimeout {
 			c.mu.Unlock()
@@ -257,4 +275,16 @@ func (c *Client) CloseSendChannel() {
 		}()
 		close(c.Send)
 	})
+}
+
+// 批量更新某个会话中 ID 小于等于指定 ID 的所有未读消息为已读
+func updateMessagesAsReadByID(conversationID string, maxID uint) error {
+	// 更新所有该会话中 ID 小于等于指定值且未读的消息为已读
+	fmt.Println(conversationID, maxID, 123123)
+	if err := config.DB.Model(&models.Message{}).
+		Where("conversation_id = ? AND is_read = false AND id <= ?", conversationID, maxID).
+		Update("is_read", true).Error; err != nil {
+		return fmt.Errorf("failed to update messages: %w", err)
+	}
+	return nil
 }

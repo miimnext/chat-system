@@ -31,7 +31,9 @@ func GetConversation(c *gin.Context) {
 	err := config.DB.
 		Preload("ParticipantAUser").
 		Preload("ParticipantBUser").
-		Where("participant_a = ? OR participant_b = ? OR group_id IS NOT NULL", userInfo.ID, userInfo.ID).
+		Where("(participant_a = ? OR participant_b = ?) OR (group_id IS NOT NULL AND ? IN (SELECT user_id FROM group_members WHERE group_members.group_id = conversations.group_id))",
+			userInfo.ID, userInfo.ID, userInfo.ID).
+		Order("last_message_at DESC").
 		Find(&conversations).Error
 	if err != nil {
 		log.Println("Error fetching conversations:", err)
@@ -62,6 +64,7 @@ func GetConversation(c *gin.Context) {
 					"avatar":     otherUser.AvatarURL,
 					"last_login": otherUser.LastLogin,
 				},
+				"last_message_at": conv.LastMessageAt, // 添加最后一条消息时间
 			})
 		} else {
 			// 处理群聊
@@ -69,6 +72,7 @@ func GetConversation(c *gin.Context) {
 				"conversation_id": conv.ConversationID,
 				"type":            "group",
 				"group_id":        conv.GroupID,
+				"last_message_at": conv.LastMessageAt, // 添加最后一条消息时间
 			})
 		}
 	}
@@ -86,7 +90,7 @@ func CreateConversationHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&requestData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		utils.RespondFailed(c, "Invalid request body")
 		return
 	}
 
@@ -97,13 +101,13 @@ func CreateConversationHandler(c *gin.Context) {
 	var receiverUser models.User
 	err := config.DB.Where("id = ?", receiverID).First(&receiverUser).Error
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"message": "Receiver does not exist", "code": "404"})
+		utils.RespondFailed(c, "Receiver does not exist")
 		return
 	}
 
 	// 校验 receiverID 是否与当前用户的 ID 匹配
 	if userID == receiverID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot create a conversation with yourself"})
+		utils.RespondFailed(c, "Cannot create a conversation with yourself")
 		return
 	}
 
@@ -131,16 +135,13 @@ func CreateConversationHandler(c *gin.Context) {
 
 	// 保存新会话到数据库
 	if err := config.DB.Create(&newConversation).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create conversation"})
+		utils.RespondFailed(c, "Failed to create conversation")
 		log.Println("Error creating conversation:", err)
 		return
 	}
-	data := map[string]interface{}{
-		"conversation_id": conversationID,
-		"code":            "200",
-	}
+
 	// 返回新创建的会话 ID
-	utils.RespondSuccess(c, data, nil)
+	utils.RespondSuccess(c, gin.H{"conversation_id": conversationID}, nil)
 
 }
 

@@ -26,6 +26,7 @@ func RegisterRoutes() *gin.Engine {
 	protected := r.Group("/api")
 
 	// 注册路由
+
 	protected.POST("/register", controllers.Register) // 绑定注册接口
 	protected.POST("/login", controllers.Login)       // 绑定登录接口
 

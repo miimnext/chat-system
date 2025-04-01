@@ -32,14 +32,14 @@ func Register(c *gin.Context) {
 	// 检查用户名是否已存在
 	var existingUser models.User
 	if err := config.DB.Where("username = ?", userInput.Username).First(&existingUser).Error; err == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username already exists"})
+		utils.RespondFailed(c, "Username already exists")
 		return
 	}
 
 	// 加密密码
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(userInput.Password), bcrypt.DefaultCost)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		utils.RespondFailed(c, "Failed to hash password")
 		return
 	}
 
@@ -52,13 +52,13 @@ func Register(c *gin.Context) {
 
 	// 插入数据库
 	if err := config.DB.Create(&newUser).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		utils.RespondFailed(c, "Failed to create user")
 		return
 	}
 	// 生成 JWT Token
 	token, err := services.GenerateToken(newUser)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		utils.RespondFailed(c, "Failed to generate token")
 		return
 	}
 	utils.RespondSuccess(c, gin.H{"token": token}, nil)
@@ -77,12 +77,12 @@ func Login(c *gin.Context) {
 	// 查找用户
 	var user models.User
 	if err := config.DB.Where("username = ?", loginInput.Username).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		utils.RespondFailed(c, "Invalid username or password")
 		return
 	}
 	// 验证密码
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(loginInput.Password)); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid username or password"})
+		utils.RespondFailed(c, "Invalid username or password")
 		return
 	}
 	// 更新最后登录时间
@@ -93,7 +93,7 @@ func Login(c *gin.Context) {
 	// 生成 JWT Token
 	token, err := services.GenerateToken(user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		utils.RespondFailed(c, "Failed to generate token")
 		return
 	}
 
@@ -105,7 +105,7 @@ func GetUserInfo(c *gin.Context) {
 	user, exists := c.Get("user")
 	if !exists {
 		// 如果用户信息不存在，返回 404 错误
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		utils.RespondFailed(c, "User not found")
 		return
 	}
 
@@ -113,9 +113,10 @@ func GetUserInfo(c *gin.Context) {
 	userInfo, ok := user.(*models.User)
 	if !ok {
 		// 如果类型断言失败，返回 400 错误
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user data"})
+		utils.RespondFailed(c, "Invalid user data")
 		return
 	}
+
 	data := UserInfoResponse{
 		ID:       userInfo.ID,
 		Username: userInfo.Username,
